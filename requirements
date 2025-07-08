@@ -5,4 +5,7 @@ pip install \
   matplotlib \
   soundfile \
   bleak \
-  pyqtgraph
+  pyqtgraph\
+  PyOpenGL\
+  PyOpenGL_accelerate
+
