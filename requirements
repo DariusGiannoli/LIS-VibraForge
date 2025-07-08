@@ -1,0 +1,7 @@
+pip install \
+  PyQt6 \
+  numpy \
+  scipy \
+  matplotlib \
+  soundfile \
+  bleak
