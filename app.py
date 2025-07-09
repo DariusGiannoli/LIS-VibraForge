@@ -2758,14 +2758,37 @@ class Haptics_App(QtWidgets.QMainWindow):
         self.ui.label_4.setStyleSheet("background-color: rgb(184, 199, 209);")
         
     def open_drone_console(self):
-        """Show the 4×4 drone grid dialog (stubbed)."""
-        # keep a reference so it's not garbage-collected
-        #self._drone_console = DroneGridWindow(self)
+        """Show the 3D drone grid dialog."""
+        if hasattr(self, '_drone_console') and self._drone_console is not None:
+            try:
+                self._drone_console.show()
+                self._drone_console.raise_()
+                self._drone_console.activateWindow()
+                return
+            except RuntimeError:
+                self._drone_console = None
         self._drone_console = Drone3DWindow()
         
-        # connect to a stub handler
-        #self._drone_console.drone_event_selected.connect(self.handle_drone_event)
+        # Connecter le signal si nécessaire
+        # self._drone_console.drone_event_selected.connect(self.handle_drone_event)
+        
+        # S'assurer que la fenêtre est correctement affichée
         self._drone_console.show()
+        self._drone_console.raise_()
+        self._drone_console.activateWindow()
+    
+    def closeEvent(self, event):
+        """Override closeEvent to clean up drone console."""
+        if hasattr(self, '_drone_console') and self._drone_console is not None:
+            try:
+                self._drone_console.close()
+            except RuntimeError:
+                pass
+            self._drone_console = None
+        
+        super().closeEvent(event)
+
+
 
     def handle_drone_event(self, drone_id: int, event_name: str):
         print(f"[Stub] Drone {drone_id} → {event_name}")

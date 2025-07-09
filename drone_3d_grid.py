@@ -82,6 +82,12 @@ class Drone3DGrid(QWidget):
 
         self.update_positions()
 
+    def showEvent(self, event):
+        """Override showEvent to ensure drones are properly positioned when window is shown."""
+        super().showEvent(event)
+        # Forcer la mise à jour des positions quand la fenêtre est affichée
+        self.update_positions()
+
     def _on_drone_selected(self, item):
         drone_id = int(item.text().split()[1])
         self._show_event_menu(drone_id)
@@ -102,7 +108,8 @@ class Drone3DGrid(QWidget):
         }
         c = color_map.get(event_name, (0.4, 0.6, 0.9, 1.0))
         # color the chosen sphere
-        self.spheres[drone_id].setColor(c)
+        if drone_id < len(self.spheres) and self.spheres[drone_id] is not None:
+            self.spheres[drone_id].setColor(c)
         # emit and print
         print(f"[Event] Drone {drone_id} → {event_name}")
         self.drone_event_selected.emit(drone_id, event_name)
@@ -126,9 +133,14 @@ class Drone3DGrid(QWidget):
                 x = (col - 1.5) * xs + xoff
                 y = (1.5 - row) * ys + yoff
                 z = zoff
-                sph = self.spheres[idx]
-                sph.resetTransform()
-                sph.translate(x, y, z)
+                
+                # S'assurer que la sphère existe avant de la déplacer
+                if idx < len(self.spheres) and self.spheres[idx] is not None:
+                    sph = self.spheres[idx]
+                    sph.resetTransform()
+                    sph.translate(x, y, z)
+                    # S'assurer que la sphère est visible
+                    sph.setVisible(True)
                 idx += 1
 
     def reset_drones(self):
@@ -141,10 +153,12 @@ class Drone3DGrid(QWidget):
         self.yoff_slider.setValue(0)
         # clear list selection
         self.drone_list.clearSelection()
-        # reset colors
+        # reset colors and ensure visibility
         default_color = (0.4, 0.6, 0.9, 1.0)
         for sph in self.spheres:
-            sph.setColor(default_color)
+            if sph is not None:
+                sph.setColor(default_color)
+                sph.setVisible(True)
         # reposition
         self.update_positions()
         print("[Reset] All drones reset to origin and default color")
