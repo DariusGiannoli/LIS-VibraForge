@@ -720,8 +720,13 @@ class ModernDroneConsole(QWidget):
         
         return section
 
+
     def _create_formation_section(self):
-        section = CollapsibleSection("Formation Controls", collapsed=True)
+        section = CollapsibleSection("Settings", collapsed=True)
+        
+        # Zoom control (placed first for better UX)
+        self.zoom_slider, self.zoom_label = self._create_zoom_slider()
+        section.add_widget(self._create_slider_widget("Zoom", self.zoom_slider, self.zoom_label))
         
         # Spread control
         self.r_slider, self.r_label = self._create_slider("Spread", 0, 50, 20)
@@ -734,16 +739,15 @@ class ModernDroneConsole(QWidget):
         
         section.add_widget(self._create_slider_widget("X Offset", self.xoff_slider, self.xoff_label))
         section.add_widget(self._create_slider_widget("Y Offset", self.yoff_slider, self.yoff_label))
-        section.add_widget(self._create_slider_widget("Z Offset", self.z_slider, self.z_label))
         
-        # Zoom control
-        self.zoom_slider, self.zoom_label = self._create_zoom_slider()
-        section.add_widget(self._create_slider_widget("Zoom", self.zoom_slider, self.zoom_label))
+        # Store reference to Z offset widget for show/hide
+        self.z_offset_widget = self._create_slider_widget("Z Offset", self.z_slider, self.z_label)
+        section.add_widget(self.z_offset_widget)
         
         return section
 
     def _create_selection_section(self):
-        section = CollapsibleSection("Selection", collapsed=True)
+        section = CollapsibleSection("Drone Selection", collapsed=True)
         
         # Quick actions
         actions_layout = QHBoxLayout()
