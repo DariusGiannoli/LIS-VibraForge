@@ -158,9 +158,9 @@ class ModernSwitch(QCheckBox):
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, "2D")
 
 class CollapsibleSection(QWidget):
-    def __init__(self, title="", parent=None):
+    def __init__(self, title="", collapsed=False, parent=None):
         super().__init__(parent)
-        self.is_expanded = True
+        self.is_expanded = not collapsed
         
         # Main layout
         self.main_layout = QVBoxLayout(self)
@@ -170,6 +170,7 @@ class CollapsibleSection(QWidget):
         # Header
         self.header = ModernButton(title)
         self.header.clicked.connect(self.toggle_section)
+        self._update_header_style()
         self.main_layout.addWidget(self.header)
         
         # Content frame
@@ -190,6 +191,15 @@ class CollapsibleSection(QWidget):
         self.animation = QPropertyAnimation(self.content_frame, b"maximumHeight")
         self.animation.setDuration(200)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        # Set initial state
+        if collapsed:
+            self.content_frame.setMaximumHeight(0)
+            self.content_frame.setVisible(False)
+    
+    def _update_header_style(self):
+        arrow = "▼" if self.is_expanded else "▶"
+        self.header.setText(f"{arrow} {self.header.text().replace('▼ ', '').replace('▶ ', '')}")
     
     def add_widget(self, widget):
         self.content_layout.addWidget(widget)
@@ -202,13 +212,29 @@ class CollapsibleSection(QWidget):
     
     def collapse(self):
         self.is_expanded = False
-        self.animation.setStartValue(self.content_frame.height())
+        self._update_header_style()
+        
+        # Get current height before starting animation
+        current_height = self.content_frame.height()
+        
+        self.animation.setStartValue(current_height)
         self.animation.setEndValue(0)
+        self.animation.finished.connect(lambda: self.content_frame.setVisible(False))
         self.animation.start()
     
     def expand(self):
         self.is_expanded = True
+        self._update_header_style()
+        
+        # Make visible and get the natural height
+        self.content_frame.setVisible(True)
         self.content_frame.setMaximumHeight(16777215)
+        natural_height = self.content_frame.sizeHint().height()
+        
+        self.animation.setStartValue(0)
+        self.animation.setEndValue(natural_height)
+        self.animation.finished.disconnect()  # Remove previous connections
+        self.animation.start()
 
 class DroneListWidget(QListWidget):
     def __init__(self, parent=None):
@@ -269,6 +295,8 @@ class ZoomableGLViewWidget(gl.GLViewWidget):
         self.zoom_factor = 1.2
         self.min_distance = 5
         self.max_distance = 100
+        self.hovered_drone_id = None
+        self.spheres = []  # Will be populated by parent
         
         # Modern styling
         self.setStyleSheet(f"""
@@ -278,6 +306,179 @@ class ZoomableGLViewWidget(gl.GLViewWidget):
                 background-color: {COLORS['background']};
             }}
         """)
+        
+        # Enable mouse tracking for hover detection
+        self.setMouseTracking(True)
+        
+    def set_spheres(self, spheres):
+        """Set reference to sphere objects for picking"""
+        self.spheres = spheres
+        
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement for hover detection"""
+        if self.parent_widget and self.spheres:
+            # Get mouse position in widget coordinates
+            mouse_pos = event.pos()
+            
+            # Find the closest sphere to mouse cursor
+            closest_drone_id = self._pick_drone_at_position(mouse_pos)
+            
+            # Update hover state
+            if closest_drone_id != self.hovered_drone_id:
+                # Remove hover from previous drone
+                if self.hovered_drone_id is not None:
+                    self.spheres[self.hovered_drone_id].set_hover_state(False)
+                
+                # Add hover to new drone
+                self.hovered_drone_id = closest_drone_id
+                if self.hovered_drone_id is not None:
+                    self.spheres[self.hovered_drone_id].set_hover_state(True)
+        
+        super().mouseMoveEvent(event)
+    
+    def mousePressEvent(self, event):
+        """Handle mouse clicks for selection"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.hovered_drone_id is not None and self.parent_widget:
+                # Confirm selection of hovered drone
+                self.parent_widget._on_drone_clicked(self.hovered_drone_id)
+                return
+        
+        super().mousePressEvent(event)
+    
+    def _pick_drone_at_position(self, mouse_pos):
+        """Ray casting picking for accurate drone selection"""
+        if not self.spheres:
+            return None
+            
+        # Get viewport dimensions
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        
+        # Convert mouse position to normalized device coordinates (-1 to 1)
+        x_ndc = (2.0 * mouse_pos.x()) / w - 1.0
+        y_ndc = 1.0 - (2.0 * mouse_pos.y()) / h  # Flip Y axis
+        
+        # Get camera parameters
+        try:
+            center = np.array(self.opts['center'])
+            distance = self.opts['distance']
+            elevation = np.radians(self.opts['elevation'])
+            azimuth = np.radians(self.opts['azimuth'])
+            fov = np.radians(self.opts.get('fov', 60))
+            
+            # Calculate camera position
+            cam_x = center[0] + distance * np.cos(elevation) * np.sin(azimuth)
+            cam_y = center[1] + distance * np.cos(elevation) * np.cos(azimuth)
+            cam_z = center[2] + distance * np.sin(elevation)
+            cam_pos = np.array([cam_x, cam_y, cam_z])
+            
+            # Calculate view direction (from camera to center)
+            view_dir = center - cam_pos
+            view_dir = view_dir / np.linalg.norm(view_dir)
+            
+            # Calculate right and up vectors
+            world_up = np.array([0, 0, 1])
+            right = np.cross(view_dir, world_up)
+            right = right / np.linalg.norm(right)
+            up = np.cross(right, view_dir)
+            up = up / np.linalg.norm(up)
+            
+            # Calculate the ray direction
+            aspect_ratio = w / h
+            tan_half_fov = np.tan(fov / 2.0)
+            
+            # Ray direction in world space
+            ray_dir = view_dir + (x_ndc * tan_half_fov * aspect_ratio * right) + (y_ndc * tan_half_fov * up)
+            ray_dir = ray_dir / np.linalg.norm(ray_dir)
+            
+            # Find closest sphere using ray-sphere intersection
+            closest_drone_id = None
+            min_distance = float('inf')
+            sphere_radius = 0.3  # Sphere radius
+            
+            for i, sphere in enumerate(self.spheres):
+                # Get sphere world position
+                transform = sphere.transform()
+                sphere_center = transform.map(np.array([0, 0, 0]))
+                
+                # Ray-sphere intersection
+                oc = cam_pos - sphere_center
+                a = np.dot(ray_dir, ray_dir)
+                b = 2.0 * np.dot(oc, ray_dir)
+                c = np.dot(oc, oc) - sphere_radius * sphere_radius
+                
+                discriminant = b * b - 4 * a * c
+                
+                if discriminant >= 0:
+                    # Intersection found, calculate distance
+                    t1 = (-b - np.sqrt(discriminant)) / (2.0 * a)
+                    t2 = (-b + np.sqrt(discriminant)) / (2.0 * a)
+                    
+                    # Use the closest positive intersection
+                    t = t1 if t1 > 0 else t2
+                    if t > 0 and t < min_distance:
+                        min_distance = t
+                        closest_drone_id = i
+            
+            return closest_drone_id
+            
+        except Exception as e:
+            # Fallback to simpler method if ray casting fails
+            return self._pick_drone_simple_fallback(mouse_pos)
+    
+    def _pick_drone_simple_fallback(self, mouse_pos):
+        """Fallback picking method using screen distance"""
+        if not self.spheres:
+            return None
+            
+        closest_drone_id = None
+        min_screen_distance = float('inf')
+        pickup_threshold = 80  # Increased threshold for easier picking
+        
+        # Get viewport center
+        center_x, center_y = self.width() / 2, self.height() / 2
+        
+        try:
+            for i, sphere in enumerate(self.spheres):
+                # Get sphere position relative to view center
+                transform = sphere.transform()
+                sphere_pos = transform.map(np.array([0, 0, 0]))
+                
+                # Simple projection: map 3D distance to screen distance
+                # This is very approximate but more reliable
+                view_center = np.array(self.opts['center'])
+                distance_from_center = np.linalg.norm(sphere_pos - view_center)
+                
+                # Calculate approximate screen position
+                # This is a heuristic based on the sphere's offset from view center
+                offset = sphere_pos - view_center
+                scale_factor = 50 / max(self.opts['distance'], 1)  # Adjust scale based on zoom
+                
+                screen_x = center_x + offset[0] * scale_factor
+                screen_y = center_y - offset[1] * scale_factor  # Flip Y
+                
+                # Calculate distance to mouse
+                dx = screen_x - mouse_pos.x()
+                dy = screen_y - mouse_pos.y()
+                screen_distance = np.sqrt(dx*dx + dy*dy)
+                
+                if screen_distance < pickup_threshold and screen_distance < min_screen_distance:
+                    min_screen_distance = screen_distance
+                    closest_drone_id = i
+                    
+        except Exception:
+            pass
+        
+        return closest_drone_id
+    
+    def leaveEvent(self, event):
+        """Clear hover when mouse leaves the widget"""
+        if self.hovered_drone_id is not None and self.spheres:
+            self.spheres[self.hovered_drone_id].set_hover_state(False)
+            self.hovered_drone_id = None
+        super().leaveEvent(event)
         
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
@@ -316,11 +517,34 @@ class ClickableMeshItem(gl.GLMeshItem):
         super().__init__(*args, **kwargs)
         self.drone_id = drone_id
         self.parent_widget = None
+        self.is_hovered = False
+        self.is_selected = False
+        self.default_color = (0.2, 0.6, 0.9, 0.8)
+        self.hover_color = (0.9, 0.9, 0.4, 1.0)  # Yellow hover
+        self.selected_color = (1.0, 0.8, 0.0, 1.0)  # Gold selected
         
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.parent_widget:
-            self.parent_widget._on_drone_clicked(self.drone_id)
-        super().mousePressEvent(event)
+    def set_hover_state(self, hovered):
+        if self.is_hovered != hovered:
+            self.is_hovered = hovered
+            self._update_visual_state()
+    
+    def set_selected_state(self, selected):
+        if self.is_selected != selected:
+            self.is_selected = selected
+            self._update_visual_state()
+    
+    def _update_visual_state(self):
+        if self.is_selected:
+            self.setColor(self.selected_color)
+        elif self.is_hovered:
+            self.setColor(self.hover_color)
+        else:
+            self.setColor(self.default_color)
+    
+    def reset_to_default(self):
+        self.is_hovered = False
+        self.is_selected = False
+        self.setColor(self.default_color)
 
 class ClickableScatterItem(pg.ScatterPlotItem):
     def __init__(self, drone_id, parent_widget, *args, **kwargs):
@@ -497,7 +721,7 @@ class ModernDroneConsole(QWidget):
         return section
 
     def _create_formation_section(self):
-        section = CollapsibleSection("Formation Controls")
+        section = CollapsibleSection("Formation Controls", collapsed=True)
         
         # Spread control
         self.r_slider, self.r_label = self._create_slider("Spread", 0, 50, 20)
@@ -519,7 +743,7 @@ class ModernDroneConsole(QWidget):
         return section
 
     def _create_selection_section(self):
-        section = CollapsibleSection("Selection")
+        section = CollapsibleSection("Selection", collapsed=True)
         
         # Quick actions
         actions_layout = QHBoxLayout()
@@ -652,6 +876,9 @@ class ModernDroneConsole(QWidget):
             self.view_3d.addItem(sph)
             self.spheres_3d.append(sph)
 
+        # Set spheres reference in the 3D view for picking
+        self.view_3d.set_spheres(self.spheres_3d)
+
         # Create 2D circles
         self.circles_2d = []
         for i in range(NUM_DRONES):
@@ -761,12 +988,9 @@ class ModernDroneConsole(QWidget):
         self._update_selection_info()
 
     def _update_visual_selection(self):
-        # Update 3D spheres
+        # Update 3D spheres using new state management
         for i, sphere in enumerate(self.spheres_3d):
-            if i in self.selected_drones:
-                sphere.setColor((1.0, 0.8, 0.0, 1.0))  # Gold
-            else:
-                sphere.setColor((0.2, 0.6, 0.9, 0.8))  # Blue
+            sphere.set_selected_state(i in self.selected_drones)
         
         # Update 2D circles
         for i, scatter in enumerate(self.circles_2d):
@@ -900,8 +1124,12 @@ class ModernDroneConsole(QWidget):
         
         for drone_id in self.selected_drones:
             if drone_id < len(self.spheres_3d):
+                # Update sphere event color and override selection color
                 color_3d = color_map_3d.get(event_name, (0.2, 0.6, 0.9, 0.8))
-                self.spheres_3d[drone_id].setColor(color_3d)
+                sphere = self.spheres_3d[drone_id]
+                sphere.default_color = color_3d
+                sphere.selected_color = color_3d  # Keep event color when selected
+                sphere.setColor(color_3d)
             
             if drone_id < len(self.circles_2d):
                 color_2d = color_map_2d.get(event_name, (51, 153, 230, 200))
@@ -959,10 +1187,9 @@ class ModernDroneConsole(QWidget):
         # Clear selections
         self._clear_selection()
         
-        # Reset colors
-        default_color_3d = (0.2, 0.6, 0.9, 0.8)
+        # Reset colors using new state management
         for sphere in self.spheres_3d:
-            sphere.setColor(default_color_3d)
+            sphere.reset_to_default()
         
         for scatter in self.circles_2d:
             scatter.setBrush(pg.mkBrush(51, 153, 230, 200))
